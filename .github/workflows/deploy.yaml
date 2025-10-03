@@ -8,8 +8,8 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  EKS_CLUSTER_NAME: eks-cluster
-  ECR_REPOSITORY: wordpress-app
+  EKS_CLUSTER_NAME: eks-dev
+  ECR_REPOSITORY: ecommerce
 
 jobs:
   build:
