@@ -1,0 +1,19 @@
+name: Policy & Security Checks
+on: { pull_request: { branches: [ main ] } }
+permissions: { contents: read }
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tflint & checkov
+        run: |
+          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+          tflint --init
+          tflint infra/terraform
+          pipx install checkov || pip install checkov
+          checkov -d infra/terraform
+      - name: helm lint
+        run: |
+          curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm lint apps/ecommerce/chart

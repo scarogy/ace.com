@@ -1,0 +1,21 @@
+name: Terraform Apply (dev on main)
+on:
+  push: { branches: [ main ], paths: [ 'infra/terraform/**' ] }
+permissions: { contents: read, id-token: write }
+jobs:
+  apply-dev:
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: 1.7.5 }
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_GITHUB_DEV }}
+          aws-region: us-east-1
+      - name: Apply dev
+        working-directory: infra/terraform/live/dev
+        run: |
+          terraform init -backend-config=backend.hcl
+          terraform apply -auto-approve -var-file=dev.tfvars

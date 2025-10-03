@@ -1,0 +1,4 @@
+apiVersion: v2
+name: ecommerce
+version: 0.2.0
+appVersion: "0.2.0"

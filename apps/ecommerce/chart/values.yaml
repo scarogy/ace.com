@@ -1,0 +1,21 @@
+image:
+  repository: ghcr.io/nginxinc/nginx-unprivileged
+  tag: stable
+  pullPolicy: IfNotPresent
+service:
+  type: ClusterIP
+  port: 80
+ingress:
+  enabled: true
+  host: dev.example.com
+  alb:
+    annotations:
+      kubernetes.io/ingress.class: alb
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+      alb.ingress.kubernetes.io/certificate-arn: ""
+      alb.ingress.kubernetes.io/ssl-redirect: "443"
+      alb.ingress.kubernetes.io/scheme: internet-facing
+      alb.ingress.kubernetes.io/target-type: ip
+resources:
+  limits: { cpu: 200m, memory: 256Mi }
+  requests: { cpu: 100m, memory: 128Mi }
