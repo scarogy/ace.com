@@ -88,7 +88,6 @@ resource "aws_iam_role" "gha" {
   force_detach_policies = true
 }
 
-# Simple broad policy for bootstrapping; tighten later to least-privilege
 data "aws_iam_policy_document" "gha_inline" {
   statement {
     sid     = "AllowTerraformBootstrap"

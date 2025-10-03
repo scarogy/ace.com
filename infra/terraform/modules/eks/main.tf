@@ -107,7 +107,6 @@ resource "aws_eks_node_group" "this" {
 }
 
 # --- OIDC Provider for IRSA ---
-# Derive thumbprint dynamically (preferred)
 data "tls_certificate" "oidc" {
   url = aws_eks_cluster.this.identity[0].oidc[0].issuer
 }
