@@ -79,6 +79,8 @@ jobs:
             --set image.registry=$ECR_REGISTRY \
             --set image.repository=$ECR_REPOSITORY \
             --set image.tag=$IMAGE_TAG \
+            --set global.compatibility.openshift.adaptSecurityContext=disabled \
+            --set global.security.allowInsecureImages=true \
             --wait \
             --timeout 10m
 
