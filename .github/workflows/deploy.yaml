@@ -73,16 +73,11 @@ jobs:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          helm upgrade wordpress bitnami/wordpress \
-          -n ecommerce \
-            --reuse-values \
-            --set image.registry=$ECR_REGISTRY \
-            --set image.repository=$ECR_REPOSITORY \
-            --set image.tag=$IMAGE_TAG \
-            --set global.compatibility.openshift.adaptSecurityContext=disabled \
-            --set global.security.allowInsecureImages=true \
-            --wait \
-            --timeout 10m
+          kubectl set image deployment/wordpress \
+            wordpress=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -n ecommerce \
+            --record
+
 
           # echo "Deploying image: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           
