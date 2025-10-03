@@ -1,0 +1,192 @@
+name: Deploy WordPress to EKS
+
+# Trigger on push to main or pull requests
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+# Environment variables used across all jobs
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: eks-dev
+  ECR_REPOSITORY: ecommerce
+
+jobs:
+  # ========================================
+  # JOB 1: Build and Push Docker Image
+  # ========================================
+  build:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    
+    # Outputs can be used by other jobs
+    outputs:
+      image-tag: ${{ steps.image-tag.outputs.tag }}
+    
+    steps:
+      # Step 1: Checkout code from repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Configure AWS credentials from secrets
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Step 3: Login to Amazon ECR
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Step 4: Generate image tag from git commit
+      - name: Generate image tag
+        id: image-tag
+        run: |
+          # Use commit SHA as tag
+          TAG=${{ github.sha }}
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Building image with tag: ${TAG}"
+
+      # Step 5: Set up Docker Buildx for multi-platform builds
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Step 6: Build and push Docker image
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image-tag.outputs.tag }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+
+      # Step 7: Run security scan with Trivy
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image-tag.outputs.tag }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      # Step 8: Upload scan results to GitHub Security
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ========================================
+  # JOB 2: Deploy to EKS
+  # ========================================
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: build
+    # Only deploy on pushes to main branch
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Configure AWS credentials
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Step 3: Install and configure kubectl
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      # Step 4: Update kubeconfig for EKS
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region ${{ env.AWS_REGION }} \
+            --name ${{ env.EKS_CLUSTER_NAME }}
+          
+          # Verify connection
+          kubectl cluster-info
+          kubectl get nodes
+
+      # Step 5: Login to ECR to get registry URL
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Step 6: Deploy to Kubernetes
+      - name: Deploy to EKS
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+        run: |
+          echo "Deploying image: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          
+          # Update the deployment with new image
+          kubectl set image deployment/wordpress \
+            wordpress=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -n ecommerce \
+            --record
+          
+          # Wait for rollout to complete (5 minute timeout)
+          kubectl rollout status deployment/wordpress \
+            -n ecommerce \
+            --timeout=5m
+          
+          # Verify deployment
+          kubectl get deployment wordpress -n ecommerce
+          kubectl get pods -n ecommerce -l app=wordpress
+
+      # Step 7: Run smoke tests
+      - name: Run smoke tests
+        run: |
+          # Get the service URL
+          echo "Waiting for service to be ready..."
+          
+          # Port-forward to test locally
+          kubectl port-forward svc/wordpress 8080:80 -n ecommerce &
+          PF_PID=$!
+          
+          # Wait for port-forward to be ready
+          sleep 5
+          
+          # Test the endpoint
+          for i in {1..30}; do
+            if curl -f -s http://localhost:8080/wp-admin/install.php > /dev/null; then
+              echo "✅ Smoke test passed!"
+              kill $PF_PID
+              exit 0
+            fi
+            echo "Attempt $i: Service not ready yet..."
+            sleep 10
+          done
+          
+          echo "❌ Smoke test failed!"
+          kill $PF_PID
+          exit 1
+
+      # Step 8: Rollback on failure
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment failed, rolling back..."
+          kubectl rollout undo deployment/wordpress -n ecommerce
+          kubectl rollout status deployment/wordpress -n ecommerce
+
