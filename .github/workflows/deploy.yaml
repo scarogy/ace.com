@@ -1,4 +1,4 @@
-name: Update WordPress Configuration
+name: Deploy WordPress to EKS
 
 on:
   push:
@@ -7,22 +7,45 @@ on:
 env:
   AWS_REGION: us-east-1
   EKS_CLUSTER_NAME: eks-dev
+  ECR_REPOSITORY: ecommerce
 
 jobs:
-  deploy:
-    name: Deploy Configuration Changes
+  sync-and-deploy:
+    name: Sync Image and Deploy
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Pull Bitnami image and push to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          # Pull official Bitnami WordPress
+          docker pull public.ecr.aws/bitnami/wordpress:6.6.2-debian-12-r9
+          
+          # Tag it for your ECR
+          docker tag public.ecr.aws/bitnami/wordpress:6.6.2-debian-12-r9 \
+            $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          
+          docker tag public.ecr.aws/bitnami/wordpress:6.6.2-debian-12-r9 \
+            $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          
+          # Push to your ECR
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          
+          echo "✅ Image pushed to ECR"
 
       - name: Install kubectl
         uses: azure/setup-kubectl@v3
@@ -35,200 +58,19 @@ jobs:
             --region ${{ env.AWS_REGION }} \
             --name ${{ env.EKS_CLUSTER_NAME }}
 
-      - name: Apply Kubernetes configurations
+      - name: Deploy to EKS
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          # If you have any ConfigMaps or Secrets to update
-          if [ -f k8s/configmap.yaml ]; then
-            kubectl apply -f k8s/configmap.yaml
-          fi
+          echo "Deploying image: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           
-          # Restart pods to pick up config changes (optional)
-          # kubectl rollout restart deployment/wordpress -n ecommerce
+          kubectl set image deployment/wordpress \
+            wordpress=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -n ecommerce
           
-          echo "✅ Configuration updated successfully!"
-
-      - name: Verify deployment
-        run: |
-          kubectl get deployment wordpress -n ecommerce
-          kubectl get pods -n ecommerce -l app.kubernetes.io/name=wordpress
+          kubectl rollout status deployment/wordpress \
+            -n ecommerce \
+            --timeout=10m
           
-          echo "✅ WordPress is running!"
-
-# name: Deploy WordPress to EKS
-
-# on:
-#   push:
-#     branches: [ main, develop ]
-#   pull_request:
-#     branches: [ main ]
-
-# env:
-#   AWS_REGION: us-east-1
-#   EKS_CLUSTER_NAME: eks-dev
-#   ECR_REPOSITORY: ecommerce
-
-# jobs:
-#   build:
-#     name: Build Docker Image
-#     runs-on: ubuntu-latest
-    
-#     permissions:
-#       contents: read
-#       security-events: write
-#       packages: write
-    
-#     outputs:
-#       image-tag: ${{ steps.image-tag.outputs.tag }}
-#       ecr-registry: ${{ steps.login-ecr.outputs.registry }}
-    
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
-
-#       - name: Configure AWS credentials
-#         uses: aws-actions/configure-aws-credentials@v4
-#         with:
-#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-#           aws-region: ${{ env.AWS_REGION }}
-
-#       - name: Login to Amazon ECR
-#         id: login-ecr
-#         uses: aws-actions/amazon-ecr-login@v2
-
-#       - name: Generate image tag
-#         id: image-tag
-#         run: |
-#           TAG=$(echo ${{ github.sha }} | cut -c1-7)
-#           echo "tag=${TAG}" >> $GITHUB_OUTPUT
-#           echo "Building image with tag: ${TAG}"
-
-#       - name: Set up Docker Buildx
-#         uses: docker/setup-buildx-action@v3
-
-#       - name: Build and push Docker image
-#         uses: docker/build-push-action@v5
-#         with:
-#           context: .
-#           push: true
-#           tags: |
-#             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image-tag.outputs.tag }}
-#             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
-#           cache-from: type=gha
-#           cache-to: type=gha,mode=max
-
-#       - name: Run Trivy vulnerability scanner
-#         uses: aquasecurity/trivy-action@master
-#         continue-on-error: true
-#         with:
-#           image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.image-tag.outputs.tag }}
-#           format: 'table'
-#           exit-code: '0'
-#           severity: 'CRITICAL,HIGH'
-
-#       - name: Print image info
-#         run: |
-#           echo "✅ Image built and pushed successfully!"
-#           echo "Registry: ${{ steps.login-ecr.outputs.registry }}"
-#           echo "Repository: ${{ env.ECR_REPOSITORY }}"
-#           echo "Tag: ${{ steps.image-tag.outputs.tag }}"
-
-#   deploy:
-#     name: Deploy to EKS
-#     runs-on: ubuntu-latest
-#     needs: build
-#     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
-
-#       - name: Configure AWS credentials
-#         uses: aws-actions/configure-aws-credentials@v4
-#         with:
-#           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-#           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-#           aws-region: ${{ env.AWS_REGION }}
-
-#       - name: Install kubectl
-#         uses: azure/setup-kubectl@v3
-#         with:
-#           version: 'v1.28.0'
-
-#       - name: Update kubeconfig
-#         run: |
-#           aws eks update-kubeconfig \
-#             --region ${{ env.AWS_REGION }} \
-#             --name ${{ env.EKS_CLUSTER_NAME }}
-#           kubectl cluster-info
-#           kubectl get nodes
-
-#       - name: Deploy to EKS
-#         env:
-#           ECR_REGISTRY: ${{ needs.build.outputs.ecr-registry }}
-#           IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
-#         run: |
-#           echo "Deploying image: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
-          
-#           if kubectl get deployment wordpress -n ecommerce 2>/dev/null; then
-#             echo "Updating existing deployment..."
-#             kubectl set image deployment/wordpress \
-#               wordpress=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-#               -n ecommerce \
-#               --record
-#           else
-#             echo "⚠️  Deployment 'wordpress' not found"
-#             echo "Please create the initial deployment first"
-#             exit 1
-#           fi
-          
-#           echo "Waiting for rollout to complete..."
-#           kubectl rollout status deployment/wordpress \
-#             -n ecommerce \
-#             --timeout=5m
-          
-#           echo "Current deployment state:"
-#           kubectl get deployment wordpress -n ecommerce
-#           kubectl get pods -n ecommerce -l app=wordpress
-
-#       - name: Verify deployment
-#         run: |
-#           echo "Checking pod health..."
-#           kubectl get pods -n ecommerce -l app=wordpress
-          
-#           POD_STATUS=$(kubectl get pods -n ecommerce -l app=wordpress -o jsonpath='{.items[0].status.phase}')
-#           echo "Pod status: $POD_STATUS"
-          
-#           if [ "$POD_STATUS" != "Running" ]; then
-#             echo "❌ Pod is not running!"
-#             kubectl describe pods -n ecommerce -l app=wordpress
-#             exit 1
-#           fi
-          
-#           echo "✅ Deployment successful!"
-
-#       - name: Rollback on failure
-#         if: failure()
-#         run: |
-#           echo "⚠️  Deployment failed, rolling back..."
-#           kubectl rollout undo deployment/wordpress -n ecommerce
-#           kubectl rollout status deployment/wordpress -n ecommerce
-#           echo "✅ Rollback completed"
-
-#   notify:
-#     name: Send Notifications
-#     runs-on: ubuntu-latest
-#     needs: [build, deploy]
-#     if: always()
-    
-#     steps:
-#       - name: Print summary
-#         run: |
-#           echo "# Deployment Summary" >> $GITHUB_STEP_SUMMARY
-#           echo "" >> $GITHUB_STEP_SUMMARY
-#           echo "- **Repository**: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
-#           echo "- **Branch**: ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-#           echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-#           echo "- **Author**: ${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
-#           echo "- **Build**: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
-#           echo "- **Deploy**: ${{ needs.deploy.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Deployment successful!"
